@@ -1,0 +1,145 @@
+import chisel3._
+import chisel3.util._
+
+// Pipeline的基础接口
+class PipelineForwardIO extends Bundle {
+    val ex1Pkg = Output(new InstructionPackage)  // EX1阶段
+    val ex2Pkg = Output(new InstructionPackage)  // EX2阶段（用于前递）
+    val wbPkg  = Output(new InstructionPackage)  // WB阶段（用于前递）
+    // 接收Forward的前递数据
+    val fwdRs1Data = Input(UInt(32.W))
+    val fwdRs2Data = Input(UInt(32.W))
+    val fwdRs3Data = Input(UInt(32.W))
+}
+
+class PipelineBackendIO extends Bundle {
+    val instPkgIn = Input(new InstructionPackage)  // 从Backend接收的InstPkg
+}
+
+class PipelineFrontendIO extends Bundle {
+    // 写回寄存器堆
+    val gprWen   = Output(Bool())
+    val gprWaddr = Output(UInt(5.W))
+    val gprWdata = Output(UInt(32.W))
+    val fprWen   = Output(Bool())
+    val fprWaddr = Output(UInt(5.W))
+    val fprWdata = Output(UInt(32.W))
+}
+
+class PipelineHazardIO extends Bundle {
+    // 接收Hazard的控制信号
+    val ex1Flush = Input(Bool())
+    val ex1Stall = Input(Bool())
+    val ex2Flush = Input(Bool())
+    val ex2Stall = Input(Bool())
+    val ex3Flush = Input(Bool())
+    val ex3Stall = Input(Bool())
+    val wbFlush  = Input(Bool())
+    val wbStall  = Input(Bool())
+    
+    // 输出EX1和EX2的InstPkg给Hazard做RAW判断
+    val ex1Pkg = Output(new InstructionPackage)
+    val ex2Pkg = Output(new InstructionPackage)
+}
+
+// ALUBranchPipeline特有的IO
+class ALUBranchPipelineHazardIO extends PipelineHazardIO {
+    // 分支预测失败信号和跳转地址
+    val predFail   = Output(Bool())
+    val branchTgt  = Output(UInt(32.W))
+}
+
+class ALUBranchPipelineIO extends Bundle {
+    val forward = new PipelineForwardIO
+    val backend = new PipelineBackendIO
+    val frontend = new PipelineFrontendIO
+    val hazard = new ALUBranchPipelineHazardIO
+}
+
+class ALUBranchPipeline extends Module {
+    val io = IO(new ALUBranchPipelineIO)
+    
+    // ========== EX1阶段 ==========
+    // EX1段间寄存器（ID-EX1）
+    val ex1Pkg = RegInit(0.U.asTypeOf(new InstructionPackage))
+    when(io.hazard.ex1Flush) {
+        ex1Pkg := 0.U.asTypeOf(new InstructionPackage)
+    }.elsewhen(!io.hazard.ex1Stall) {
+        ex1Pkg := io.backend.instPkgIn
+    }
+    
+    // 应用Forward前递
+    val ex1Rs1Data = io.forward.fwdRs1Data
+    val ex1Rs2Data = io.forward.fwdRs2Data
+    
+    // ALU实例化
+    val alu = Module(new ALU)
+    // ALU源操作数选择
+    val aluSrc1 = Mux(ex1Pkg.src1Sel === 0.U, ex1Rs1Data, ex1Pkg.pc)
+    val aluSrc2 = Mux(ex1Pkg.src2Sel === 0.U, ex1Rs2Data, ex1Pkg.imm)
+    alu.io.src1 := aluSrc1
+    alu.io.src2 := aluSrc2
+    alu.io.op := ex1Pkg.op(4, 0)
+    
+    // Branch实例化
+    val branch = Module(new Branch)
+    branch.io.src1 := ex1Rs1Data
+    branch.io.src2 := ex1Rs2Data
+    branch.io.op := ex1Pkg.op
+    branch.io.pc := ex1Pkg.pc
+    branch.io.imm := ex1Pkg.imm
+    
+    // EX1阶段更新InstPkg
+    val ex1PkgOut = ex1Pkg.EX1Update(alu.io.res, branch.io.branchTgt, branch.io.predFail)
+    
+    // ========== EX2阶段 ==========
+    // EX1-EX2段间寄存器
+    val ex2Pkg = RegInit(0.U.asTypeOf(new InstructionPackage))
+    when(io.hazard.ex2Flush) {
+        ex2Pkg := 0.U.asTypeOf(new InstructionPackage)
+    }.elsewhen(!io.hazard.ex2Stall) {
+        ex2Pkg := ex1PkgOut
+    }
+    
+    // Branch结果在EX2阶段送出（为了时序打一拍）
+    io.hazard.predFail := ex2Pkg.predFail
+    io.hazard.branchTgt := ex2Pkg.branchTgt
+    
+    // ========== EX3阶段 ==========
+    // EX2-EX3段间寄存器
+    val ex3Pkg = RegInit(0.U.asTypeOf(new InstructionPackage))
+    when(io.hazard.ex3Flush) {
+        ex3Pkg := 0.U.asTypeOf(new InstructionPackage)
+    }.elsewhen(!io.hazard.ex3Stall) {
+        ex3Pkg := ex2Pkg
+    }
+    
+    // ========== WB阶段 ==========
+    // EX3-WB段间寄存器
+    val wbPkg = RegInit(0.U.asTypeOf(new InstructionPackage))
+    when(io.hazard.wbFlush) {
+        wbPkg := 0.U.asTypeOf(new InstructionPackage)
+    }.elsewhen(!io.hazard.wbStall) {
+        wbPkg := ex3Pkg
+    }
+    
+    // WB阶段：选择写回数据（ALU结果）
+    val wbData = wbPkg.aluResult
+    val wbPkgOut = wbPkg.WBUpdate(wbData)
+    
+    // 写回到寄存器堆
+    io.frontend.gprWen := wbPkgOut.rdValid && !wbPkgOut.rd(5)
+    io.frontend.gprWaddr := wbPkgOut.rd(4, 0)
+    io.frontend.gprWdata := wbPkgOut.rfWdata
+    io.frontend.fprWen := wbPkgOut.rdValid && wbPkgOut.rd(5)
+    io.frontend.fprWaddr := wbPkgOut.rd(4, 0)
+    io.frontend.fprWdata := wbPkgOut.rfWdata
+    
+    // 输出到Forward和Hazard
+    io.forward.ex1Pkg := ex1Pkg
+    io.forward.ex2Pkg := ex2Pkg
+    io.forward.wbPkg := wbPkgOut
+    io.hazard.ex1Pkg := ex1Pkg
+    io.hazard.ex2Pkg := ex2Pkg
+}
+
