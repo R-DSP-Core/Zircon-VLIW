@@ -37,8 +37,8 @@ class Frontend extends Module {
     val io = IO(new FrontendIO)
     
     // ========== IF Stage ==========
-    // PC寄存器
-    val pc = RegInit(0.U(32.W))
+    // PC寄存器（复位值0x80000000）
+    val pc = RegInit(0x80000000L.U(32.W))
     
     // NPC模块
     val npc = Module(new NPC)
