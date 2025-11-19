@@ -1,0 +1,113 @@
+import chisel3._
+import chisel3.util._
+import ZirconConfig.EXEOp._
+
+class HazardIO extends Bundle {
+    val frontend = Flipped(new FrontendHazardIO)
+    val backend = Flipped(new BackendHazardIO)
+}
+
+class Hazard extends Module {
+    val io = IO(new HazardIO)
+    
+    // ========== 默认不产生任何控制信号 ==========
+    io.frontend.flush := false.B
+    io.frontend.stall := false.B
+    for (i <- 0 until 8) {
+        io.backend.ex1Flush(i) := false.B
+        io.backend.ex1Stall(i) := false.B
+        io.backend.ex2Flush(i) := false.B
+        io.backend.ex2Stall(i) := false.B
+        io.backend.ex3Flush(i) := false.B
+        io.backend.ex3Stall(i) := false.B
+        io.backend.wbFlush(i) := false.B
+        io.backend.wbStall(i) := false.B
+    }
+    
+    // ========== 1. 除法器停顿处理（最高优先级）==========
+    val divStall = io.backend.divBusy(0) || io.backend.divBusy(1)
+    when(divStall) {
+        // 对前端发起停顿
+        io.frontend.stall := true.B
+        // 停顿所有的ID-EX1、EX1-EX2、EX2-EX3寄存器
+        for (i <- 0 until 8) {
+            io.backend.ex1Stall(i) := true.B
+            io.backend.ex2Stall(i) := true.B
+            io.backend.ex3Stall(i) := true.B
+        }
+        // 冲刷所有的EX3-WB寄存器
+        for (i <- 0 until 8) {
+            io.backend.wbFlush(i) := true.B
+        }
+    }
+    
+    // ========== 2. 分支预测失败处理（次优先级）==========
+    when(!divStall && io.backend.predFail) {
+        // 给前端flush信号
+        io.frontend.flush := true.B
+        // 给ID-EX1段间寄存器flush信号
+        for (i <- 0 until 8) {
+            io.backend.ex1Flush(i) := true.B
+        }
+        // 给EX1-EX2段间寄存器flush信号（Branch在EX1阶段，所以EX1的指令也要flush）
+        for (i <- 0 until 8) {
+            io.backend.ex2Flush(i) := true.B
+        }
+    }
+    
+    // ========== 3. RAW数据相关处理 ==========
+    // 判断指令是否需要WB阶段才能访问（load/mul/div/float）
+    def needWB(op: UInt, pipelineIdx: Int): Bool = {
+        val isLoad = op(4) && !op(5)  // op[4]=1表示branch/load/muldiv，但load没有op[5]
+        val isMulDiv = op(4) && ((pipelineIdx == 3) || (pipelineIdx == 4)).B  // 乘除法在流水线3-4
+        val isFloat = op(6)  // op[6]=1表示float（不包括fdiv）
+        val isFDiv = (pipelineIdx == 0).B  // FDiv在流水线0
+        isLoad || isMulDiv || isFloat || isFDiv
+    }
+    
+    // 检查RAW冲突：ID阶段的指令依赖EX1或EX2阶段的指令
+    val rawHazard = Wire(Bool())
+    rawHazard := false.B
+    
+    for (idIdx <- 0 until 8) {  // ID阶段的8条指令
+        val idPkg = io.frontend.idPkgs(idIdx)
+        
+        // 检查与EX1阶段的冲突
+        for (ex1Idx <- 0 until 8) {
+            val ex1Pkg = io.backend.ex1Pkgs(ex1Idx)
+            when(ex1Pkg.rdValid && needWB(ex1Pkg.op, ex1Idx)) {
+                // 检查rs1, rs2, rs3是否与rd相关
+                val rs1Match = idPkg.rs1 === ex1Pkg.rd
+                val rs2Match = idPkg.rs2 === ex1Pkg.rd
+                val rs3Match = (idIdx < 3).B && (idPkg.rs3 === ex1Pkg.rd)  // 只有前3条流水线有rs3
+                when(rs1Match || rs2Match || rs3Match) {
+                    rawHazard := true.B
+                }
+            }
+        }
+        
+        // 检查与EX2阶段的冲突
+        for (ex2Idx <- 0 until 8) {
+            val ex2Pkg = io.backend.ex2Pkgs(ex2Idx)
+            when(ex2Pkg.rdValid && needWB(ex2Pkg.op, ex2Idx)) {
+                val rs1Match = idPkg.rs1 === ex2Pkg.rd
+                val rs2Match = idPkg.rs2 === ex2Pkg.rd
+                val rs3Match = (idIdx < 3).B && (idPkg.rs3 === ex2Pkg.rd)
+                when(rs1Match || rs2Match || rs3Match) {
+                    rawHazard := true.B
+                }
+            }
+        }
+    }
+    
+    // RAW冲突处理：如果没有除法器停顿，则处理RAW冲突
+    when(!divStall && rawHazard) {
+        // 对前端发起停顿
+        io.frontend.stall := true.B
+        // 冲刷ID-EX1寄存器（如果除法器stall则优先stall，但这里已经排除了divStall）
+        for (i <- 0 until 8) {
+            io.backend.ex1Flush(i) := true.B
+        }
+    }
+}
+

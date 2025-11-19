@@ -16,7 +16,7 @@ object Main extends App {
     val isSim = Option(System.getenv("BUILD_MODE")).getOrElse("SYNC") != "SYNC"
     println(s"isSim: $isSim")
     ChiselStage.emitSystemVerilogFile(
-        new Decoder(ALU = true, FPU = true, Branch = false, Mem = false, IMulDiv = false, FDiv = false),
+        new CPU(),
         Array("-td", "build/"),
         firtoolOpts = firtoolOptions,
     )

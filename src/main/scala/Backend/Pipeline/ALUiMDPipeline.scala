@@ -36,18 +36,18 @@ class ALUiMDPipeline extends Module {
     alu.io.src2 := aluSrc2
     alu.io.op := ex1Pkg.op(4, 0)
     
+    // SRT2除法器实例化（必须在Multiply之前，因为Multiply需要divBusy信号）
+    val srt2 = Module(new SRT2)
+    srt2.io.src1 := ex1Rs1Data
+    srt2.io.src2 := ex1Rs2Data
+    srt2.io.op := ex1Pkg.op(4, 0)
+    
     // Multiply实例化
     val multiply = Module(new MulBooth2Wallce)
     multiply.io.src1 := ex1Rs1Data
     multiply.io.src2 := ex1Rs2Data
     multiply.io.op := ex1Pkg.op(4, 0)
     multiply.io.divBusy := srt2.io.busy
-    
-    // SRT2除法器实例化
-    val srt2 = Module(new SRT2)
-    srt2.io.src1 := ex1Rs1Data
-    srt2.io.src2 := ex1Rs2Data
-    srt2.io.op := ex1Pkg.op(4, 0)
     
     // 选择乘法或除法结果
     val isMulDiv = ex1Pkg.op(4)  // op[4]用于区分是否是mul/div

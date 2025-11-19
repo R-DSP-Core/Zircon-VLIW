@@ -25,6 +25,7 @@ class FrontendBackendIO extends Bundle {
 class FrontendHazardIO extends Bundle {
     val flush = Input(Bool())  // 冲刷信号
     val stall = Input(Bool())  // 阻塞信号
+    val idPkgs = Output(Vec(8, new InstructionPackage))  // ID阶段的指令包（用于RAW检测）
 }
 
 class FrontendIO extends Bundle {
@@ -58,7 +59,7 @@ class Frontend extends Module {
     // IF段的8个InstructionPackage
     val ifInstPkgs = Wire(Vec(8, new InstructionPackage))
     for (i <- 0 until 8) {
-        ifInstPkgs(i) := (new InstructionPackage).IFUpdate(pc + (i * 4).U, io.mem.insts(i))
+        ifInstPkgs(i) := WireDefault(0.U.asTypeOf(new InstructionPackage)).IFUpdate(pc + (i * 4).U, io.mem.insts(i))
     }
     
     // ========== IF-ID 段间寄存器 ==========
@@ -159,6 +160,7 @@ class Frontend extends Module {
         )
     }
     
-    // 输出到后端
+    // 输出到后端和Hazard
     io.backend.instPkg := decodedInstPkgs
+    io.hazard.idPkgs := decodedInstPkgs
 }

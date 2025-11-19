@@ -1,38 +1,37 @@
-# Zircon-VLIW 处理器设计
+# Zircon-VLIW 处理器设计文档
 
 ## 概述
 
-Zircon-VLIW（以下简称Zircon）是一款基于RISC-V的VLIW处理器，目标是高效处理DSP任务。处理器使用8取指、8译码、8发射、8提交的结构来实现，能够处理由VLIW编译器生成的RISC-V imf程序。
+Zircon-VLIW（以下简称 Zircon）是一款基于 RISC-V 的 VLIW 处理器，旨在高效处理 DSP 任务。该处理器采用 8 取指、8 译码、8 发射、8 提交的并行结构，能够处理由 VLIW 编译器生成的 RISC-V imf 程序。
 
-在原型机阶段，Zircon使用哈佛架构，假设拥有单周期100%命中无限大Cache——即访存行为（包括取指、加载、存储）完全由软件环境Emulator在单周期内完成。
+在原型机阶段，Zircon 采用哈佛架构，假设拥有单周期 100% 命中的无限大 Cache——即所有访存行为（包括取指、加载、存储）完全由软件仿真环境 Emulator 在单周期内完成。
 
 ![RProject.drawio](./arch.assets/RProject.drawio.svg)
 
-Zircon-VLIW原型机的设计模块关系如下：
+Zircon-VLIW 原型机的设计模块关系如下：
 
-* Frontend
-
-  * NPC（下一PC生成）
-
-  * Decoder *8（8路译码器）
+* **Frontend（前端）**
+  * NPC（下一 PC 生成）
+  * Decoder ×8（8 路译码器）
   * FPRegfile（浮点寄存器堆）
   * GPRegfile（通用寄存器堆）
 
-* Backend
-
+* **Backend（后端）**
   * FDiv-FPU Pipeline
-  * ALU-FPU Pipeline * 2
-  * ALU-iMD Pipeline * 2（ALU-整数乘除法）
-  * ALU-LSU Pipeline * 2（ALU-访存）
-  * ALU-Branch Pipeline * 2
+  * ALU-FPU Pipeline ×2
+  * ALU-iMD Pipeline ×2（ALU-整数乘除法）
+  * ALU-LSU Pipeline ×2（ALU-访存）
+  * ALU-Branch Pipeline ×2
 
-* Hazard
+* **Hazard（冒险控制）**
+
+---
 
 ## 指令传递范式
 
-在Zircon中，指令以InstructionPackage类为基本单元，该类中包含了一条指令从取指到写回可能携带的所有信息，包括指令码、读写数据等。这个包会随着流水线向后传递，并在编译时借助Firrtl的死代码删除来裁剪掉不会在后续流水级使用的成员。
+在 Zircon 中，指令以 `InstructionPackage` 类为基本单元，该类包含了一条指令从取指到写回全过程中可能携带的所有信息，包括指令码、读写数据等。这个包会随着流水线向后传递，并在编译时借助 Firrtl 的死代码删除优化，裁剪掉后续流水级中不再使用的成员。
 
-InstructionPackage的定义如下：
+`InstructionPackage` 的定义如下：
 
 ```scala
 class InstructionPackage extends Bundle {
@@ -114,11 +113,11 @@ class InstructionPackage extends Bundle {
 }
 ```
 
-其中，在最后的几个方法，是为了能够在流水线的不同流水级，从不同的模块中将成员逐渐“组装”到InstructionPackage中。除了Decoder会在元件内组装之外，其余的方法都是在Frontend.scala和Backend.scala按照流水级进行调用。
+以上定义中的几个 Update 方法，用于在流水线的不同流水级中，从不同的模块逐步"组装"数据到 `InstructionPackage` 中。除了 `Decoder` 会在模块内部进行组装之外，其余的方法都在 `Frontend.scala` 和 `Backend.scala` 中按照流水级进行调用。
 
+---
 
-
-## Frontend
+## Frontend（前端）
 
 前端的代码目录结构如下：
 
@@ -126,7 +125,7 @@ class InstructionPackage extends Bundle {
 Frontend/
 ├── Frontend.scala
 ├── Fetch/
-│   └──NPC.scala
+│   └── NPC.scala
 ├── Decode/
 │   ├── Decoder.scala
 │   └── RVISA.scala
@@ -134,55 +133,57 @@ Frontend/
     └── Regfile.scala
 ```
 
-### Frontend
+### Frontend 顶层模块
 
-前端由两个流水级组成：IF（取指）和ID（指令译码）。其中，NPC和PC寄存器（复位值0x80000000）位于IF段，而Decoder们和两个例化的寄存器堆位于ID段，流水级之间使用实现段间寄存器分割。除此之外，取指行为在IF端发起，当周期仿真环境就会根据PC值给回8条地址上连续的指令。
+前端由两个流水级组成：**IF（取指）**和 **ID（指令译码）**。其中，NPC 和 PC 寄存器（复位值 `0x80000000`）位于 IF 段，而 Decoder 们和两个例化的寄存器堆位于 ID 段，流水级之间使用段间寄存器分割。此外，取指行为在 IF 端发起，同周期仿真环境会根据 PC 值返回 8 条地址连续的指令。
 
-FrontendIO有3套接口：
+`FrontendIO` 包含 3 套接口：
 
-* FrontendMemIO：将PC值发送给仿真环境，仿真环境一次给回以当前PC为起始地址的连续8条指令
-* FrontendBackendIO：将ID段组装好的8个InstPkg发送给后端，接收后端来的重定向目标地址，并接收后端来的写回请求。
-* FrontendHazardIO：Hazard给出的flush和stall信号，用来控制ShiftRegister的流动和NPC的生成
+* **FrontendMemIO**：将 PC 值发送给仿真环境，仿真环境返回以当前 PC 为起始地址的连续 8 条指令。
+* **FrontendBackendIO**：将 ID 段组装好的 8 个 `InstPkg` 发送给后端，接收后端的重定向目标地址，以及后端的写回请求。
+* **FrontendHazardIO**：接收 Hazard 给出的 `flush` 和 `stall` 信号，用来控制流水线寄存器的流动和 NPC 的生成，同时将 ID 阶段组装好的 `InstPkg` 发给 Hazard 用于冲突检测。
 
-当Hazard给出flush信号时，IF-ID段间寄存器应当被冲刷，NPC应当重新基于后端的重定向目标地址来重定向PC。当Hazard给出stall信号时，IF-ID段间寄存器应当被阻塞，NPC应当保持PC不变
+**控制信号响应**：
+* 当 Hazard 给出 `flush` 信号时，IF-ID 段间寄存器应当被冲刷，NPC 应当基于后端的重定向目标地址重新生成 PC。
+* 当 Hazard 给出 `stall` 信号时，IF-ID 段间寄存器应当被阻塞，NPC 应当保持 PC 不变。
 
-### NPC
+### NPC（下一 PC 生成）
 
-NPC模块负责根据流水线的执行情况来计算下一个PC并实现PC的重定向，NPCIO拥有3套接口：
+NPC 模块负责根据流水线的执行情况计算下一个 PC 并实现 PC 的重定向。`NPCIO` 包含 3 套接口：
 
-* NPCHazardIO：Hazard的冲刷和阻塞信号
-* NPCBackendIO：后端计算单元给出的PC重定向地址
-* NPCFrontendIO：前端中的PC值，并向前端发送npc（下一个PC值）
+* **NPCHazardIO**：接收 Hazard 的冲刷和阻塞信号。
+* **NPCBackendIO**：接收后端计算单元给出的 PC 重定向地址。
+* **NPCFrontendIO**：接收前端的当前 PC 值，向前端发送 `npc`（下一个 PC 值）。
 
-### Decoder
+### Decoder（译码器）
 
-Decoder将指令进行译码，转换为InstructionPackage中的部分字段。由于每条流水线只能到来部分固定类型的指令，因此Decoder具有模板化设计（通过输入参数控制决定能译码哪些类型的指令）。8条流水线的功能部件如表所示：（需要注意的是，0号流水线的FPU不支持FPToInt和IntToFP转换，1和2支持）
+Decoder 将指令进行译码，转换为 `InstructionPackage` 中的部分字段。由于每条流水线只能接收部分固定类型的指令，因此 Decoder 采用模板化设计（通过输入参数控制能够译码哪些类型的指令）。8 条流水线的功能部件如下表所示（**需要注意**：0 号流水线的 FPU 不支持 FPToInt 和 IntToFP 转换，1 号和 2 号支持）：
 
 | 流水线编号 | 0    | 1    | 2    | 3        | 4        | 5    | 6    | 7      |
 | ---------- | ---- | ---- | ---- | -------- | -------- | ---- | ---- | ------ |
 | 部件1      | FDiv | ALU  | ALU  | ALU      | ALU      | ALU  | ALU  | ALU    |
 | 部件2      | FPU  | FPU  | FPU  | iMul/Div | iMul/Div | LSU  | LSU  | Branch |
 
-具体部件的功能后文讲解。因此，我们为每一个功能部件可以执行的指令都创建了一个译码表（即指令码到操作微码的映射）。在执行时，Decoder会查询自己支持的所有译码表，并确定当前指令所需要的操作微码，并将其打包到InstPkgOut中并输出。
+具体部件的功能将在后文讲解。我们为每一个功能部件可以执行的指令创建了一个译码表（即指令码到操作微码的映射）。在执行时，Decoder 会查询自己支持的所有译码表，确定当前指令所需的操作微码，并将其打包到 `InstPkgOut` 中输出。
 
-Decider只有一套IO：
+Decoder 只有一套 IO：
 
-* DecoderIO：输入inst，输出InstPkgOut
+* **DecoderIO**：输入 `inst`，输出 `InstPkgOut`。
 
-Decoder基于RVISA.scala中使用BitPat定义的指令集编码进行工作，具体操作微码编码在Config.scala中。
+Decoder 基于 `RVISA.scala` 中使用 `BitPat` 定义的指令集编码进行工作，具体操作微码编码在 `Config.scala` 中。
 
-译码器实现有基础细节：
+**译码器实现细节**：
 
-* 对于寄存器编号，指令集中是5位，但我们扩展了1位，如果是GPR，那么最高位为0；如果是FPR，那么最高位是1。
-* 对于rd编号为0且是GPR的情况，rdValid将会被设置为false.B。这是为了简化Regfile的写优先设计：
-  * 如果GPR写0，那么这个写入值不应该被写优先前递，因为0号寄存器不管怎么读都是0。所以当初始化为0时，GPR的写前递、读逻辑都不需要特判地址为0的问题
-  * FPR并没有“0号寄存器一定是0”的规定
+* **寄存器编号扩展**：指令集中的寄存器编号为 5 位，我们扩展了 1 位。如果是 GPR，则最高位为 0；如果是 FPR，则最高位为 1。
+* **GPR 0 号寄存器处理**：对于 `rd` 编号为 0 且是 GPR 的情况，`rdValid` 将会被设置为 `false.B`。这是为了简化 Regfile 的写优先设计：
+  * 如果向 GPR 0 号寄存器写入，该写入值不应该被写优先前递，因为 0 号寄存器读取值恒为 0。这样当初始化为 0 时，GPR 的写前递、读逻辑都不需要特判地址为 0 的情况。
+  * FPR 并没有"0 号寄存器恒为 0"的规定。
 
-### Regfile
+### Regfile（寄存器堆）
 
-写优先、长度为32、宽度为32位的读、写端口可以参数化的寄存器堆模板，由Frontend例化为gpr和fpr。由于RISC-V寄存器编号在固定位置，因此读地址无需经过译码就可以直接由Frontend连接到Regfile中
+Regfile 是一个写优先、长度为 32、宽度为 32 位的寄存器堆模板，读写端口数量可参数化配置。Frontend 将其例化为 `gpr` 和 `fpr`。由于 RISC-V 寄存器编号位于指令的固定位置，因此读地址无需经过译码就可以直接由 Frontend 连接到 Regfile。
 
-前端并不是8个通道都需要同时读GPR和FPR，后端也并不是每一个流水线都有可能写回GPR和FPR，具体连线分配关系如下表所示：
+前端并不是 8 个通道都需要同时读 GPR 和 FPR，后端也并不是每一条流水线都有可能写回 GPR 和 FPR。具体连线分配关系如下表所示：
 
 | 流水线编号 | 0    | 1    | 2    | 3    | 4    | 5    | 6    | 7    |
 | ---------- | ---- | ---- | ---- | ---- | ---- | ---- | ---- | ---- |
@@ -191,135 +192,171 @@ Decoder基于RVISA.scala中使用BitPat定义的指令集编码进行工作，�
 | 写GPR口    | 0    | 1    | 1    | 1    | 1    | 1    | 1    | 1    |
 | 写FPR口    | 1    | 1    | 1    | 0    | 0    | 0    | 0    | 0    |
 
-因此，GPR由14个读口和7个写口，FPR有9个读口和3个写口，每个寄存器堆内，所有读口对所有写口都需要判断写优先。
+因此，GPR 有 14 个读口和 7 个写口，FPR 有 9 个读口和 3 个写口。每个寄存器堆内，所有读口对所有写口都需要判断写优先。
 
-## Backend
+---
 
-后端代码目录结构如下：
+## Backend（后端）
+
+后端的代码目录结构如下：
 
 ```
-Frontend/
+Backend/
 ├── Backend.scala
 ├── Pipeline/
 │   ├── FDivFPUPipeline.scala
-│		├── ALUFPUPipeline.scala
-│		├── ALUiMDUPipeline.scala
-│		├── ALULSUPipeline.scala
-│		└── ALUBranchPipeline.scala
-├── FunctionUnit/
+│   ├── ALUFPUPipeline.scala
+│   ├── ALUiMDPipeline.scala
+│   ├── ALULSUPipeline.scala
+│   └── ALUBranchPipeline.scala
+├── Arithmetic/
 │   ├── ALU.scala
 │   ├── Adder.scala
 │   ├── Branch.scala
-│		├── FPU.scala
-│		├── FDiv.scala
-│		├── LSU.scala
-│		├── Multiply.scala
-│		├── Shifter.scala
-│		└── SRT2.scala
+│   ├── FPU.scala
+│   ├── FDiv.scala
+│   ├── LSU.scala
+│   ├── Multiply.scala
+│   ├── Shifter.scala
+│   └── SRT2.scala
 └── Bypass/
     └── Forward.scala
 ```
 
-### Backend
+### Backend 顶层模块
 
-后端由多个Pipeline组成，在这些Pipeline之前，首先使用一个段间寄存器，接收Frontend给出的InstructionPackage——这也是ID和EX1阶段的段间寄存器：ID-EX1段间寄存器。每个Pipeline内部都有EX1、EX2、EX3、WB四个阶段，也就是拥有EX1-EX2、EX2-EX3、EX3-WB四个段间寄存器。
+后端由多个 Pipeline 组成。在这些 Pipeline 之前，首先使用一个段间寄存器接收 Frontend 给出的 `InstructionPackage`——这也是 ID 和 EX1 阶段之间的段间寄存器：**ID-EX1 段间寄存器**。每个 Pipeline 内部都有 **EX1、EX2、EX3、WB** 四个阶段，也就是拥有 **EX1-EX2、EX2-EX3、EX3-WB** 三个段间寄存器。
 
-每个Pipeline中拥有的功能单元如下表所示：
+每个 Pipeline 中拥有的功能单元如下表所示：
 
 | 流水线编号 | 0    | 1    | 2    | 3        | 4        | 5    | 6    | 7      |
 | ---------- | ---- | ---- | ---- | -------- | -------- | ---- | ---- | ------ |
 | 部件1      | FDiv | ALU  | ALU  | ALU      | ALU      | ALU  | ALU  | ALU    |
 | 部件2      | FPU  | FPU  | FPU  | iMul/Div | iMul/Div | LSU  | LSU  | Branch |
 
-BackendIO拥有3套接口：
+`BackendIO` 包含 3 套接口：
 
-* Flipped(FrontendBackendIO) ：把前面前端和后端的接口整个用Flipped反过来
-* BackendHazardIO：向Hazard输出EX1和EX2阶段各个流水线的InstPkg用来做RAW判断，以及传递后端中可能出现的分支预测失败flush、除法器stall等，同时接收Hazard针对每个阶段寄存器的独立的flush和stall信号（即，任何停顿信号都应该送入Hazard统一调度）
-* BackendMemIO：两个ALULSUPipeline中LSU和仿真环境数据交互接口，根据地址读、写数据
+* **Flipped(FrontendBackendIO)**：将前端和后端的接口整体使用 `Flipped` 反转方向。
+* **BackendHazardIO**：向 Hazard 输出 EX1 和 EX2 阶段各流水线的 `InstPkg` 用于 RAW 冲突判断，传递后端可能出现的分支预测失败 `flush`、除法器 `stall` 等信号，同时接收 Hazard 针对每个阶段寄存器的独立 `flush` 和 `stall` 信号（即，任何停顿信号都应该送入 Hazard 统一调度）。
+* **BackendMemIO**：两个 ALULSUPipeline 中 LSU 与仿真环境的数据交互接口，根据地址进行数据读写。
 
-每个寄存器在Hazard给出属于这个寄存器的flush或stall时，都应该做出相应的操作，注意同时给出时优先响应flush（除了ID-EX1寄存器之外，其余都是封装在Pipeline内部的）
+**段间寄存器控制**：每个寄存器在 Hazard 给出属于该寄存器的 `flush` 或 `stall` 信号时，都应该做出相应的响应。注意当同时给出时，优先响应 `flush`（除了 ID-EX1 寄存器之外，其余都封装在 Pipeline 内部）。
 
-### FunctionUnit
+### Arithmetic（算术功能单元）
 
-#### Adder
+#### Adder（加法器）
 
-adder中有多种经过测试的块间进位加法器，时序较好，供其他功能单元调用。
+Adder 中包含多种经过测试的块间进位加法器，时序性能较好，供其他功能单元调用。
 
-#### Shifter
+#### Shifter（移位器）
 
-桶形移位器实现
+桶形移位器实现。
 
-#### ALU
+#### ALU（算术逻辑单元）
 
-ALU占据EX1阶段，通过实例化Adder和Shifter，并补充一些辅助的逻辑，可以实现EXEOp中所有标出的非乘除整型运算。其两个源操作数的送入在Pipeline中由InstPkg中的Src1Sel和Src2Sel决定，其结果可以在EX阶段被前递，但是特别注意：
+ALU 占据 EX1 阶段，通过实例化 Adder 和 Shifter，并补充一些辅助逻辑，可以实现 `EXEOp` 中所有标注的非乘除整型运算。其两个源操作数的选择在 Pipeline 中由 `InstPkg` 中的 `Src1Sel` 和 `Src2Sel` 决定，其结果可以在 EX2 阶段被前递。**特别注意**：
 
-* 在执行JALR和JAL指令的时候，我们应该默认让他执行PC+4的操作
-* 如果选择了RS1或者RS2作为源操作数，那么还需要看是否该数据正在由forward模块前递，以前递为准
+* 在执行 `JALR` 和 `JAL` 指令时，应该默认让其执行 `PC+4` 的操作。
+* 如果选择了 `RS1` 或 `RS2` 作为源操作数，还需要检查该数据是否正在由 Forward 模块前递，以前递数据为准。
 
-#### Branch
+#### Branch（分支单元）
 
-branch占据EX1阶段，可以判断分支是否跳转+计算分支跳转地址。注意其输入应该也受到前递影响
+Branch 占据 EX1 阶段，可以判断分支是否跳转并计算分支跳转地址。注意其输入同样受到前递影响。
 
-#### Multiply
+#### Multiply（乘法器）
 
-该乘法器采用3级流水，2bit Booth编码+Wallce Tree+全加器，占据EX1、EX2、EX3三级流水线，其结果必须要等到WB段才可以前递，注意它里面是独立的段间寄存器，应该同样需要响应Hazard给出的stall或者flush，注意其输入应该也受到前递影响
+该乘法器采用 3 级流水，使用 2-bit Booth 编码 + Wallace Tree + 全加器，占据 EX1、EX2、EX3 三级流水线。其结果必须等到 WB 段才可以前递。注意其内部有独立的段间寄存器，同样需要响应 Hazard 给出的 `stall` 或 `flush` 信号。其输入同样受到前递影响。
 
-#### SRT2
+#### SRT2（SRT2 除法器）
 
-SRT2除法器，占据EX1、EX2、EX3三级流水线，其结果必须要等到WB段才可以前递。其stall信号将会在EX3阶段产生，其计算周期不定，由被除数和除数的绝对值前导零之差决定，注意其输入应该也受到前递影响
+SRT2 除法器占据 EX1、EX2、EX3 三级流水线，其结果必须等到 WB 段才可以前递。其 `stall` 信号在 EX3 阶段产生，计算周期不定，由被除数和除数的绝对值前导零之差决定。其输入同样受到前递影响。
 
-#### FPU&FDiv
+#### FPU & FDiv（浮点单元与浮点除法器）
 
-原型机阶段先不实现这个，默认他们需要EX1、EX2、EX3三级流水，其结果就是输入的rs1Data，但是为了模拟真实情况，结果依然需要等到WB才能前递
+原型机阶段暂不完整实现这两个单元。默认它们需要 EX1、EX2、EX3 三级流水，其结果就是输入的 `rs1Data`。但为了模拟真实情况，结果依然需要等到 WB 才能前递。
 
-#### LSU
+#### LSU（加载存储单元）
 
-LSU占据EX2、EX3阶段，在原型机阶段非常简单：把op、由ALU计算并过了EX1-EX2寄存器的地址、在EX1经过前递修正的写数据（rs2Data）送出去，然后把读回来的数据，按照加载指令的定义，进行零扩展或者位扩展，送到后面。这过程在原型机阶段，事实上在EX1阶段就全部完成了，但是为了模拟真实Cache，我们要求它空过EX3阶段，只有到WB阶段才能前递。
+LSU 占据 EX2、EX3 阶段。在原型机阶段实现非常简单：将 `op`、由 ALU 计算并通过 EX1-EX2 寄存器传递的地址、在 EX1 经过前递修正的写数据（`rs2Data`）送出，然后将读回的数据按照加载指令的定义进行零扩展或符号扩展，送到后续阶段。这个过程在原型机阶段实际上在 EX2 阶段就全部完成了，但为了模拟真实 Cache 的行为，我们要求其空过 EX3 阶段，只有到 WB 阶段才能前递。
 
-### Pipeline
+### Pipeline（流水线）
 
-每个Pipeline都有基础的几套接口：
+每个 Pipeline 都有以下几套基础接口：
 
-* PipelineForwardIO：包括EX1阶段的instPkg、EX2阶段的InstPkg、WB阶段的InstPkg，用来供Forward进行前递，并接收Forward的前递
-* PipelineBackendIO：接受Backend从Frontend那里送来的InstPkg，每一个Pkg按照位置只会送入一个Pipeline
-* PipelineFrontendIO：写回前端两个寄存器堆的数据和请求，包括地址、写数据和两个寄存器堆的写使能，以及ALUBranchPipeline特有的分支跳转地址
-* PipelineHazardIO：将产生的stall和flush请求送到Hazard，由Hazard统一调度；同时需要将EX1和EX2阶段的instPkg也送出，让Hazard判断RAW冲突，并接收Hazard给出针对每个段间寄存器的stall和flush
+* **PipelineForwardIO**：包括 EX1 阶段的 `instPkg`、EX2 阶段的 `InstPkg`、WB 阶段的 `InstPkg`，用于供 Forward 模块进行前递判断，并接收 Forward 的前递数据。
+* **PipelineBackendIO**：接收 Backend 从 Frontend 送来的 `InstPkg`，每个 Pkg 按照流水线编号只会送入对应的一个 Pipeline。
+* **PipelineFrontendIO**：写回前端两个寄存器堆的数据和请求，包括地址、写数据和两个寄存器堆的写使能。ALUBranchPipeline 还包括特有的分支跳转地址。
+* **PipelineHazardIO**：将产生的 `stall` 和 `flush` 请求送到 Hazard 进行统一调度；同时需要将 EX1 和 EX2 阶段的 `instPkg` 送出，让 Hazard 判断 RAW 冲突，并接收 Hazard 给出的针对每个段间寄存器的 `stall` 和 `flush` 信号。
 
-流水线的WB段，需要一个多选器，基于op进行判断到底需要写回所有功能单元产生的哪个数据，并将更新后的InstPkg送到Forward中
+流水线的 WB 段需要一个多路选择器，基于 `op` 判断应该写回哪个功能单元产生的数据，并将更新后的 `InstPkg` 送到 Forward 模块。
 
 #### FDivFPUPipeline
 
-这个流水线因为在原型机阶段没什么已经实现好的元件，就直接简单实现就可以了
+该流水线因为在原型机阶段没有已经实现好的完整功能单元，可以直接简单实现。
 
 #### ALUFPUPipeline
 
-这个流水线只有EX1阶段有ALU，然后可以在EX2阶段前递ALU数据
+该流水线只有 EX1 阶段包含 ALU，然后可以在 EX2 阶段前递 ALU 数据。
 
-#### ALUiMDUPipeline
+#### ALUiMDPipeline
 
-这个流水线只有EX1阶段有ALU，EX1、EX2、EX3阶段有Multiply和SRT2除法器。这个流水线需要将除法器产生的停顿信号送到PipelineHazardIO的stall中，ALU结果EX2前递，乘除法结果必须WB前递
+该流水线只有 EX1 阶段包含 ALU，EX1、EX2、EX3 阶段包含 Multiply 和 SRT2 除法器。该流水线需要将除法器产生的停顿信号送到 `PipelineHazardIO` 的 `stall` 中。ALU 结果在 EX2 前递，乘除法结果必须在 WB 前递。
 
 #### ALULSUPipeline
 
-这个流水线EX1阶段有ALU，EX2阶段有LSU，注意LSU要用ALU的加法结果来做访存，所以这里的ALU需要特殊判断一下当前如果是load或者store，默认执行加法。注意EX3阶段要空过，等到WB才可以前递LSU的结果，ALU的结果EX2就可以给出
+该流水线 EX1 阶段包含 ALU，EX2 阶段包含 LSU。注意 LSU 需要使用 ALU 的加法结果进行访存，所以这里的 ALU 需要特殊判断：当前如果是 `load` 或 `store` 指令，默认执行加法操作。注意 EX3 阶段需要空过，等到 WB 才可以前递 LSU 的结果。ALU 的结果在 EX2 就可以前递。
 
 #### ALUBranchPipeline
 
-这个流水线EX1阶段有ALU和Branch，ALU结果EX2阶段前递，注意Branch结果不可以在EX1阶段直接送出，而是为了时序考虑打一拍，EX2阶段一起送出到PipelineHazardIO。注意，我们现在完全采用静态预测，不需要给出predOffset，如果发现需要跳转，就认为predFail
+该流水线 EX1 阶段包含 ALU 和 Branch。ALU 结果在 EX2 阶段前递。注意 Branch 结果不可以在 EX1 阶段直接送出，而是为了时序考虑打一拍，在 EX2 阶段一起送出到 `PipelineHazardIO`。注意，我们目前完全采用静态预测，不需要给出 `predOffset`，如果发现需要跳转，就认为 `predFail`。
 
-### Forward
+### Forward（数据前递）
 
-Forward接受每条流水线在EX2或WB阶段给出的InstPkg，通过判断其写入使能和写入寄存器地址和EX1阶段的instPkg2-3个源寄存器（注意只有前三条流水线是3个源寄存器，后面的流水线只有2个源寄存器），判断是否需要将EX2或WB阶段的数据进行前递。
+Forward 模块接收每条流水线在 EX2 或 WB 阶段给出的 `InstPkg`，通过判断其写入使能、写入寄存器地址与 EX1 阶段的 `instPkg` 的 2-3 个源寄存器（注意只有前三条流水线有 3 个源寄存器，后面的流水线只有 2 个源寄存器），判断是否需要将 EX2 或 WB 阶段的数据进行前递。
 
-这里的逻辑比较复杂：每一个EX1阶段的数据，都需要和所有8条流水线的EX2、WB（如果可以前递的话）的rd进行比较（特别注意是带着第六位——判断是否浮点的寄存器编号），
+这里的逻辑比较复杂：每一个 EX1 阶段的数据，都需要与所有 8 条流水线的 EX2、WB（如果可以前递）的 `rd` 进行比较（**特别注意**是带着第 6 位——判断是否为浮点寄存器的寄存器编号）。
 
-* 当同一流水级，有多个数据同时可以前递的时候，以编号较大的流水线数据为准（因为最新）
-* 当不同流水级，有多个数据可以同时前递的时候，以EX2为准（因为最新）
+**前递优先级规则**：
+* 当同一流水级有多个数据同时可以前递时，以编号较大的流水线数据为准（因为最新）。
+* 当不同流水级有多个数据可以同时前递时，以 EX2 为准（因为最新）。
 
-所有流水线的EX、WB是否可以前递如下表所示
+所有流水线的 EX2、WB 是否可以前递如下表所示：
 
 | 流水线 | 0        | 1       | 2       | 3        | 4        | 5       | 6       | 7    |
 | ------ | -------- | ------- | ------- | -------- | -------- | ------- | ------- | ---- |
 | EX2    | No       | ALU     | ALU     | ALU      | ALU      | ALU     | ALU     | ALU  |
 | WB     | FPU+FDiv | ALU+FPU | ALU+FPU | ALU+iMDU | ALU+iMDU | ALU+LSU | ALU+LSU | ALU  |
 
+---
+
+## Hazard（冒险控制）
+
+Hazard 模块独立位于 Hazard 目录下，具有非常重要的流水线停顿和冲刷调控功能。
+
+`HazardIO` 由以下几套接口构成：
+
+* **Flipped(FrontendHazardIO)**：将前端和 Hazard 的接口反转方向。
+* **Flipped(BackendHazardIO)**：将后端和 Hazard 的接口反转方向。
+
+### 控制相关处理
+
+控制相关是由于分支指令跳转带来的流水线冲刷。当 Branch 模块检测到跳转时，会通过后端和 Hazard 之间的接口将跳转使能传递给 Hazard。Hazard 需要执行以下操作：
+
+* 给前端 `flush` 信号
+* 给 ID-EX1 段间寄存器 `flush` 信号
+* 给 EX1-EX2 段间寄存器 `flush` 信号
+
+### 数据相关处理
+
+数据相关是由于某些指令不能在 EX1 阶段产生结果，或者需要停顿多个周期来处理（如除法）。这些情况都在后端出现。
+
+* **对于 load（包括 flw）、乘除法、浮点指令**：它们的结果需要在 WB 阶段才能访问。当 8 条后端流水线的 EX1 或 EX2 级中有这些指令，且处于 ID 级的那一组 8 条指令中有任意一条与这些指令存在数据相关，则需要：
+  * 对前端发起停顿
+  * 冲刷 ID-EX1 寄存器（**注意**：如果此时除法器给出了 `stall`，则优先执行 `stall`）
+
+* **对于除法器给出的 stall 信号**，Hazard 需要：
+  * 对前端发起停顿
+  * 停顿所有的 ID-EX1、EX1-EX2、EX2-EX3 寄存器
+  * 冲刷所有的 EX3-WB 寄存器
+
+---
