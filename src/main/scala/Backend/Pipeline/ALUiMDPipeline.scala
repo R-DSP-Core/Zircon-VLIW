@@ -17,12 +17,8 @@ class ALUiMDPipeline extends Module {
     val io = IO(new ALUiMDPipelineIO)
     
     // ========== EX1阶段 ==========
-    val ex1Pkg = RegInit(0.U.asTypeOf(new InstructionPackage))
-    when(io.hazard.ex1Flush) {
-        ex1Pkg := 0.U.asTypeOf(new InstructionPackage)
-    }.elsewhen(!io.hazard.ex1Stall) {
-        ex1Pkg := io.backend.instPkgIn
-    }
+    // ID-EX1 段间寄存器在 Backend 中统一管理，这里直接使用传入的数据
+    val ex1Pkg = io.backend.instPkgIn
     
     // 应用Forward前递
     val ex1Rs1Data = io.forward.fwdRs1Data
@@ -34,29 +30,23 @@ class ALUiMDPipeline extends Module {
     val aluSrc2 = Mux(ex1Pkg.src2Sel === 0.U, ex1Rs2Data, ex1Pkg.imm)
     alu.io.src1 := aluSrc1
     alu.io.src2 := aluSrc2
-    alu.io.op := ex1Pkg.op(4, 0)
+    alu.io.op := ex1Pkg.op
     
-    // SRT2除法器实例化（必须在Multiply之前，因为Multiply需要divBusy信号）
+    // SRT2除法器实例化
     val srt2 = Module(new SRT2)
     srt2.io.src1 := ex1Rs1Data
     srt2.io.src2 := ex1Rs2Data
     srt2.io.op := ex1Pkg.op(4, 0)
     
-    // Multiply实例化
+    // Multiply实例化（内部有3级流水，结果在EX3阶段有效）
     val multiply = Module(new MulBooth2Wallce)
     multiply.io.src1 := ex1Rs1Data
     multiply.io.src2 := ex1Rs2Data
     multiply.io.op := ex1Pkg.op(4, 0)
     multiply.io.divBusy := srt2.io.busy
     
-    // 选择乘法或除法结果
-    val isMulDiv = ex1Pkg.op(4)  // op[4]用于区分是否是mul/div
-    val isDiv = ex1Pkg.op(2)     // op[2]用于区分mul和div
-    val mulDivRes = Mux(isDiv, srt2.io.res, multiply.io.res)
-    
-    // EX1阶段更新InstPkg，选择ALU或MulDiv结果
-    val ex1Result = Mux(isMulDiv, mulDivRes, alu.io.res)
-    val ex1PkgOut = ex1Pkg.EX1Update(ex1Result, 0.U, false.B)
+    // EX1阶段：只保存ALU结果，乘除法器在内部流水
+    val ex1PkgOut = ex1Pkg.EX1Update(alu.io.res, 0.U, false.B)
     
     // 输出divBusy信号给Hazard
     io.hazard.divBusy := srt2.io.busy
@@ -70,11 +60,24 @@ class ALUiMDPipeline extends Module {
     }
     
     // ========== EX3阶段 ==========
+    // 乘法器内部有2级流水，结果在EX3阶段有效
+    // 在EX3阶段捕获乘法器/除法器结果
+    val ex3MulRes = multiply.io.res
+    val ex3DivRes = srt2.io.res
+    
     val ex3Pkg = RegInit(0.U.asTypeOf(new InstructionPackage))
     when(io.hazard.ex3Flush) {
         ex3Pkg := 0.U.asTypeOf(new InstructionPackage)
     }.elsewhen(!io.hazard.ex3Stall) {
         ex3Pkg := ex2Pkg
+    }
+    
+    // 缓存EX3阶段的乘除法结果，与ex3Pkg同步传递到WB
+    val ex3MulResReg = RegInit(0.U(32.W))
+    val ex3DivResReg = RegInit(0.U(32.W))
+    when(!io.hazard.ex3Stall) {
+        ex3MulResReg := ex3MulRes
+        ex3DivResReg := ex3DivRes
     }
     
     // ========== WB阶段 ==========
@@ -85,8 +88,11 @@ class ALUiMDPipeline extends Module {
         wbPkg := ex3Pkg
     }
     
-    // WB阶段：写回ALU/MulDiv结果
-    val wbData = wbPkg.aluResult
+    // WB阶段：根据op选择ALU结果还是乘除法器结果
+    val wbIsMulDiv = wbPkg.op(4)  // op[4]=1表示是mul/div指令
+    val wbIsDiv = wbPkg.op(2)     // op[2]=1表示是div指令
+    val wbMulDivRes = Mux(wbIsDiv, ex3DivResReg, ex3MulResReg)
+    val wbData = Mux(wbIsMulDiv, wbMulDivRes, wbPkg.aluResult)
     val wbPkgOut = wbPkg.WBUpdate(wbData)
     
     // 写回到寄存器堆
@@ -100,6 +106,7 @@ class ALUiMDPipeline extends Module {
     // 输出到Forward和Hazard
     io.forward.ex1Pkg := ex1Pkg
     io.forward.ex2Pkg := ex2Pkg
+    io.forward.ex3Pkg := ex3Pkg
     io.forward.wbPkg := wbPkgOut
     io.hazard.ex1Pkg := ex1Pkg
     io.hazard.ex2Pkg := ex2Pkg

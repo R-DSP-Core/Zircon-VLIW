@@ -13,9 +13,9 @@ class FrontendBackendIO extends Bundle {
     val branchTgt = Input(UInt(32.W))  // 分支重定向目标地址
     val predFail = Input(Bool())  // 分支预测失败信号
     // 写回接口
-    val gprWen = Input(Vec(7, Bool()))
-    val gprWaddr = Input(Vec(7, UInt(5.W)))
-    val gprWdata = Input(Vec(7, UInt(32.W)))
+    val gprWen = Input(Vec(8, Bool()))      // 8个GPR写口
+    val gprWaddr = Input(Vec(8, UInt(5.W)))
+    val gprWdata = Input(Vec(8, UInt(32.W)))
     val fprWen = Input(Vec(3, Bool()))
     val fprWaddr = Input(Vec(3, UInt(5.W)))
     val fprWdata = Input(Vec(3, UInt(32.W)))
@@ -28,10 +28,17 @@ class FrontendHazardIO extends Bundle {
     val idPkgs = Output(Vec(8, new InstructionPackage))  // ID阶段的指令包（用于RAW检测）
 }
 
+// 前端调试接口
+class FrontendDebugIO extends Bundle {
+    val gpr = Output(Vec(32, UInt(32.W)))  // GPR寄存器堆
+    val fpr = Output(Vec(32, UInt(32.W)))  // FPR寄存器堆
+}
+
 class FrontendIO extends Bundle {
     val mem = new FrontendMemIO
     val backend = new FrontendBackendIO
     val hazard = new FrontendHazardIO
+    val debug = new FrontendDebugIO
 }
 
 class Frontend extends Module {
@@ -74,8 +81,9 @@ class Frontend extends Module {
     
     // ========== ID Stage ==========
     // 8个Decoder，根据流水线功能配置
+    // 注意：所有流水线都支持ALU以提高灵活性
     val decoders = Seq(
-        Module(new Decoder(ALU = false, FPU = true,  Branch = false, Mem = false, IMulDiv = false, FDiv = true)),  // 0: FDiv + FPU
+        Module(new Decoder(ALU = true,  FPU = true,  Branch = false, Mem = false, IMulDiv = false, FDiv = true)),  // 0: ALU + FDiv + FPU
         Module(new Decoder(ALU = true,  FPU = true,  Branch = false, Mem = false, IMulDiv = false, FDiv = false)), // 1: ALU + FPU (FPToInt)
         Module(new Decoder(ALU = true,  FPU = true,  Branch = false, Mem = false, IMulDiv = false, FDiv = false)), // 2: ALU + FPU (IntToFP)
         Module(new Decoder(ALU = true,  FPU = false, Branch = false, Mem = false, IMulDiv = true,  FDiv = false)), // 3: ALU + iMulDiv
@@ -90,8 +98,8 @@ class Frontend extends Module {
         decoders(i).io.instPkgIn := idInstPkgs(i)
     }
     
-    // 寄存器堆：GPR 14读7写，FPR 9读3写
-    val grf = Module(new Regfile(nr = 14, nw = 7))
+    // 寄存器堆：GPR 14读8写，FPR 9读3写
+    val grf = Module(new Regfile(nr = 14, nw = 8))
     val frf = Module(new Regfile(nr = 9, nw = 3))
     
     // ========== 寄存器堆读端口连接 ==========
@@ -118,7 +126,7 @@ class Frontend extends Module {
     }
     
     // ========== 寄存器堆写端口连接（来自后端）==========
-    for (i <- 0 until 7) {
+    for (i <- 0 until 8) {
         grf.io.wen(i) := io.backend.gprWen(i)
         grf.io.waddr(i) := io.backend.gprWaddr(i)
         grf.io.wdata(i) := io.backend.gprWdata(i)
@@ -163,4 +171,8 @@ class Frontend extends Module {
     // 输出到后端和Hazard
     io.backend.instPkg := decodedInstPkgs
     io.hazard.idPkgs := decodedInstPkgs
+    
+    // 调试输出：寄存器堆的值
+    io.debug.gpr := grf.io.dbgRegs
+    io.debug.fpr := frf.io.dbgRegs
 }

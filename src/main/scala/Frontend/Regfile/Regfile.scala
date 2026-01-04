@@ -7,11 +7,16 @@ class RegfileIO(nr: Int, nw: Int) extends Bundle {
     val waddr = Input(Vec(nw, UInt(5.W)))
     val wdata = Input(Vec(nw, UInt(32.W)))
     val wen = Input(Vec(nw, Bool()))
+    // 调试接口：暴露所有寄存器的值
+    val dbgRegs = Output(Vec(32, UInt(32.W)))
 }
 
 class Regfile(nr: Int, nw: Int) extends Module {
     val io = IO(new RegfileIO(nr, nw))
     val regfile = RegInit(VecInit.fill(32)(0.U(32.W)))
+    
+    // 调试输出：所有寄存器的值
+    io.dbgRegs := regfile
     
     // 读端口逻辑：每个读端口对所有写端口判断写优先
     for (i <- 0 until nr) {

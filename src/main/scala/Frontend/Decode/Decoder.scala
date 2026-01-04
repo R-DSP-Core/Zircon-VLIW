@@ -156,7 +156,7 @@ class Decoder(ALU: Boolean, FPU: Boolean, Branch: Boolean, Mem: Boolean, IMulDiv
 
     def immGen(immType: UInt, inst: UInt) = MuxLookup(immType, 0.U(32.W))(Seq(
         U_TYPE -> (inst(31, 12) ## 0.U(12.W)),
-        J_TYPE -> SE(inst(31) ## inst(19, 12) ## inst(30, 21) ## 0.U(1.W), 32),
+        J_TYPE -> SE(inst(31) ## inst(19, 12) ## inst(20) ## inst(30, 21) ## 0.U(1.W), 32),  // 修复：添加inst[20]
         I_TYPE -> SE(inst(31, 20), 32),
         S_TYPE -> SE(inst(31, 25) ## inst(11, 7), 32),
         B_TYPE -> SE(inst(31) ## inst(7) ## inst(30, 25) ## inst(11, 8) ## 0.U(1.W), 32),

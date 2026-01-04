@@ -1,10 +1,31 @@
 import chisel3._
 import chisel3.util._
 
+// CPU调试接口
+class CPUDebugIO extends Bundle {
+    // 寄存器堆
+    val gpr = Output(Vec(32, UInt(32.W)))  // GPR寄存器堆
+    val fpr = Output(Vec(32, UInt(32.W)))  // FPR寄存器堆
+    
+    // 8条流水线的WB阶段提交信息
+    val wbValid = Output(Vec(8, Bool()))       // 是否有效提交
+    val wbPC = Output(Vec(8, UInt(32.W)))      // 提交的PC
+    val wbInst = Output(Vec(8, UInt(32.W)))    // 提交的指令
+    val wbRd = Output(Vec(8, UInt(6.W)))       // 写回的寄存器（6位，最高位区分GPR/FPR）
+    val wbData = Output(Vec(8, UInt(32.W)))    // 写回的数据
+    
+    // 分支调试信号
+    val predFail = Output(Bool())
+    val branchTgt = Output(UInt(32.W))
+    val hazardFlush = Output(Bool())
+    val hazardStall = Output(Bool())
+}
+
 // CPU的顶层IO：对外提供仿真环境的内存接口
 class CPUIO extends Bundle {
     val imem = new FrontendMemIO     // 取指内存接口
     val dmem = new BackendMemIO      // 数据内存接口（两个LSU）
+    val debug = new CPUDebugIO       // 调试接口
 }
 
 class CPU extends Module {
@@ -43,4 +64,19 @@ class CPU extends Module {
     
     // 数据访存接口（两个LSU）
     io.dmem <> backend.io.mem
+    
+    // ========== 连接调试接口 ==========
+    io.debug.gpr := frontend.io.debug.gpr
+    io.debug.fpr := frontend.io.debug.fpr
+    io.debug.wbValid := backend.io.debug.wbValid
+    io.debug.wbPC := backend.io.debug.wbPC
+    io.debug.wbInst := backend.io.debug.wbInst
+    io.debug.wbRd := backend.io.debug.wbRd
+    io.debug.wbData := backend.io.debug.wbData
+    
+    // 分支调试信号
+    io.debug.predFail := backend.io.frontend.predFail
+    io.debug.branchTgt := backend.io.frontend.branchTgt
+    io.debug.hazardFlush := hazard.io.frontend.flush
+    io.debug.hazardStall := hazard.io.frontend.stall
 }

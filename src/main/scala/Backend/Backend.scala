@@ -13,9 +13,9 @@ class BackendFrontendIO extends Bundle {
     val instPkgs = Input(Vec(8, new InstructionPackage))
     
     // 写回到Frontend寄存器堆（8条流水线的写回请求）
-    val gprWen = Output(Vec(7, Bool()))      // 7个GPR写口
-    val gprWaddr = Output(Vec(7, UInt(5.W)))
-    val gprWdata = Output(Vec(7, UInt(32.W)))
+    val gprWen = Output(Vec(8, Bool()))      // 8个GPR写口（流水线0现在也支持ALU）
+    val gprWaddr = Output(Vec(8, UInt(5.W)))
+    val gprWdata = Output(Vec(8, UInt(32.W)))
     val fprWen = Output(Vec(3, Bool()))      // 3个FPR写口
     val fprWaddr = Output(Vec(3, UInt(5.W)))
     val fprWdata = Output(Vec(3, UInt(32.W)))
@@ -49,10 +49,21 @@ class BackendHazardIO extends Bundle {
     val branchTgt = Output(UInt(32.W))
 }
 
+// Backend调试接口
+class BackendDebugIO extends Bundle {
+    // 8条流水线的WB阶段提交信息
+    val wbValid = Output(Vec(8, Bool()))       // 是否有效提交
+    val wbPC = Output(Vec(8, UInt(32.W)))      // 提交的PC
+    val wbInst = Output(Vec(8, UInt(32.W)))    // 提交的指令
+    val wbRd = Output(Vec(8, UInt(6.W)))       // 写回的寄存器（6位，最高位区分GPR/FPR）
+    val wbData = Output(Vec(8, UInt(32.W)))    // 写回的数据
+}
+
 class BackendIO extends Bundle {
     val frontend = new BackendFrontendIO
     val hazard = new BackendHazardIO
     val mem = new BackendMemIO
+    val debug = new BackendDebugIO
 }
 
 class Backend extends Module {
@@ -83,9 +94,10 @@ class Backend extends Module {
     
     // ========== 连接Forward输入（使用辅助函数折叠）==========
     def connectPipeToForward(idx: Int, pipe: Module): Unit = {
-        forward.io.ex2Pkgs(idx) := pipe.asInstanceOf[{ def io: { def forward: { def ex2Pkg: InstructionPackage }}}].io.forward.ex2Pkg
-        forward.io.wbPkgs(idx) := pipe.asInstanceOf[{ def io: { def forward: { def wbPkg: InstructionPackage }}}].io.forward.wbPkg
         forward.io.ex1Pkgs(idx) := pipe.asInstanceOf[{ def io: { def forward: { def ex1Pkg: InstructionPackage }}}].io.forward.ex1Pkg
+        forward.io.ex2Pkgs(idx) := pipe.asInstanceOf[{ def io: { def forward: { def ex2Pkg: InstructionPackage }}}].io.forward.ex2Pkg
+        forward.io.ex3Pkgs(idx) := pipe.asInstanceOf[{ def io: { def forward: { def ex3Pkg: InstructionPackage }}}].io.forward.ex3Pkg
+        forward.io.wbPkgs(idx) := pipe.asInstanceOf[{ def io: { def forward: { def wbPkg: InstructionPackage }}}].io.forward.wbPkg
     }
     
     def connectForwardToPipe(idx: Int, pipe: Module): Unit = {
@@ -148,10 +160,9 @@ class Backend extends Module {
     io.frontend.branchTgt := pipeline7.io.hazard.branchTgt
     
     // ========== 汇总写回信号到Frontend（使用循环）==========
-    // GPR写口分配：流水线1-7各1个，共7个
-    for (i <- 0 until 7) {
-        val pipelineIdx = i + 1
-        val p = pipelines(pipelineIdx).asInstanceOf[{ 
+    // GPR写口分配：流水线0-7各1个，共8个
+    for (i <- 0 until 8) {
+        val p = pipelines(i).asInstanceOf[{ 
             def io: { 
                 def frontend: { 
                     def gprWen: Bool
@@ -179,5 +190,25 @@ class Backend extends Module {
         io.frontend.fprWen(i) := p.io.frontend.fprWen
         io.frontend.fprWaddr(i) := p.io.frontend.fprWaddr
         io.frontend.fprWdata(i) := p.io.frontend.fprWdata
+    }
+    
+    // ========== 调试接口：暴露WB阶段提交信息 ==========
+    // 从各流水线的forward接口获取wbPkg
+    for (i <- 0 until 8) {
+        val p = pipelines(i).asInstanceOf[{ 
+            def io: { 
+                def forward: { 
+                    def wbPkg: InstructionPackage
+                }
+            }
+        }]
+        val wbPkg = p.io.forward.wbPkg
+        // 使用 inst != 0 判断是否是有效指令
+        io.debug.wbValid(i) := wbPkg.inst =/= 0.U
+        io.debug.wbPC(i) := wbPkg.pc
+        io.debug.wbInst(i) := wbPkg.inst
+        // 如果 rdValid=false（如 store/branch），设置 rd=0 避免 difftest 检查寄存器
+        io.debug.wbRd(i) := Mux(wbPkg.rdValid, wbPkg.rd, 0.U)
+        io.debug.wbData(i) := wbPkg.rfWdata
     }
 }

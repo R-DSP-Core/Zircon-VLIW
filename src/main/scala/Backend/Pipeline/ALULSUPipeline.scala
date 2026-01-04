@@ -13,12 +13,8 @@ class ALULSUPipeline extends Module {
     val io = IO(new ALULSUPipelineIO)
     
     // ========== EX1阶段 ==========
-    val ex1Pkg = RegInit(0.U.asTypeOf(new InstructionPackage))
-    when(io.hazard.ex1Flush) {
-        ex1Pkg := 0.U.asTypeOf(new InstructionPackage)
-    }.elsewhen(!io.hazard.ex1Stall) {
-        ex1Pkg := io.backend.instPkgIn
-    }
+    // ID-EX1 段间寄存器在 Backend 中统一管理，这里直接使用传入的数据
+    val ex1Pkg = io.backend.instPkgIn
     
     // 应用Forward前递
     val ex1Rs1Data = io.forward.fwdRs1Data
@@ -30,35 +26,38 @@ class ALULSUPipeline extends Module {
     val aluSrc2 = Mux(ex1Pkg.src2Sel === 0.U, ex1Rs2Data, ex1Pkg.imm)
     alu.io.src1 := aluSrc1
     alu.io.src2 := aluSrc2
-    alu.io.op := ex1Pkg.op(4, 0)
+    alu.io.op := ex1Pkg.op
     
-    // LSU实例化
-    val lsu = Module(new LSU)
-    lsu.io.op := ex1Pkg.op
-    lsu.io.addr := alu.io.res  // 访存地址由ALU计算
-    lsu.io.wdata := ex1Rs2Data  // store指令的数据来自rs2
-    
-    // 连接LSU的内存接口
-    io.mem <> lsu.io.mem
-    
-    // EX1阶段更新InstPkg
-    val ex1PkgOut = ex1Pkg.EX1Update(alu.io.res, 0.U, false.B)
+    // EX1阶段更新InstPkg（包含ALU结果和前递后的rs2Data供EX2阶段store使用）
+    val ex1PkgOut = WireDefault(ex1Pkg.EX1Update(alu.io.res, 0.U, false.B))
+    ex1PkgOut.rs2Data := ex1Rs2Data  // 保存前递后的rs2数据，供EX2阶段store使用
     
     // ========== EX2阶段 ==========
     val ex2Pkg = RegInit(0.U.asTypeOf(new InstructionPackage))
     when(io.hazard.ex2Flush) {
         ex2Pkg := 0.U.asTypeOf(new InstructionPackage)
     }.elsewhen(!io.hazard.ex2Stall) {
-        // EX2阶段更新memResult
-        ex2Pkg := ex1PkgOut.EX2Update(lsu.io.res)
+        ex2Pkg := ex1PkgOut
     }
+    
+    // LSU实例化（在EX2阶段发起访问）
+    val lsu = Module(new LSU)
+    lsu.io.op := ex2Pkg.op
+    lsu.io.addr := ex2Pkg.aluResult  // 使用EX1-EX2寄存器中的ALU结果作为地址
+    lsu.io.wdata := ex2Pkg.rs2Data   // store数据使用EX1阶段前递修正后保存的rs2Data
+    
+    // 连接LSU的内存接口
+    io.mem <> lsu.io.mem
+    
+    // EX2阶段更新memResult
+    val ex2PkgOut = ex2Pkg.EX2Update(lsu.io.res)
     
     // ========== EX3阶段 ==========
     val ex3Pkg = RegInit(0.U.asTypeOf(new InstructionPackage))
     when(io.hazard.ex3Flush) {
         ex3Pkg := 0.U.asTypeOf(new InstructionPackage)
     }.elsewhen(!io.hazard.ex3Stall) {
-        ex3Pkg := ex2Pkg
+        ex3Pkg := ex2PkgOut  // 使用包含memResult的ex2PkgOut
     }
     
     // ========== WB阶段 ==========
@@ -87,6 +86,7 @@ class ALULSUPipeline extends Module {
     // 输出到Forward和Hazard
     io.forward.ex1Pkg := ex1Pkg
     io.forward.ex2Pkg := ex2Pkg
+    io.forward.ex3Pkg := ex3Pkg
     io.forward.wbPkg := wbPkgOut
     io.hazard.ex1Pkg := ex1Pkg
     io.hazard.ex2Pkg := ex2Pkg

@@ -12,12 +12,8 @@ class ALUFPUPipeline extends Module {
     val io = IO(new ALUFPUPipelineIO)
     
     // ========== EX1阶段 ==========
-    val ex1Pkg = RegInit(0.U.asTypeOf(new InstructionPackage))
-    when(io.hazard.ex1Flush) {
-        ex1Pkg := 0.U.asTypeOf(new InstructionPackage)
-    }.elsewhen(!io.hazard.ex1Stall) {
-        ex1Pkg := io.backend.instPkgIn
-    }
+    // ID-EX1 段间寄存器在 Backend 中统一管理，这里直接使用传入的数据
+    val ex1Pkg = io.backend.instPkgIn
     
     // 应用Forward前递
     val ex1Rs1Data = io.forward.fwdRs1Data
@@ -30,7 +26,7 @@ class ALUFPUPipeline extends Module {
     val aluSrc2 = Mux(ex1Pkg.src2Sel === 0.U, ex1Rs2Data, ex1Pkg.imm)
     alu.io.src1 := aluSrc1
     alu.io.src2 := aluSrc2
-    alu.io.op := ex1Pkg.op(4, 0)
+    alu.io.op := ex1Pkg.op
     
     // FPU实例化
     val fpu = Module(new FPU)
@@ -83,6 +79,7 @@ class ALUFPUPipeline extends Module {
     // 输出到Forward和Hazard
     io.forward.ex1Pkg := ex1Pkg
     io.forward.ex2Pkg := ex2Pkg
+    io.forward.ex3Pkg := ex3Pkg
     io.forward.wbPkg := wbPkgOut
     io.hazard.ex1Pkg := ex1Pkg
     io.hazard.ex2Pkg := ex2Pkg

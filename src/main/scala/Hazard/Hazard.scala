@@ -61,7 +61,8 @@ class Hazard extends Module {
         val isLoad = op(4) && !op(5)  // op[4]=1表示branch/load/muldiv，但load没有op[5]
         val isMulDiv = op(4) && ((pipelineIdx == 3) || (pipelineIdx == 4)).B  // 乘除法在流水线3-4
         val isFloat = op(6)  // op[6]=1表示float（不包括fdiv）
-        val isFDiv = (pipelineIdx == 0).B  // FDiv在流水线0
+        // FDiv 需要根据操作码判断，而不是流水线编号
+        val isFDiv = (op === ZirconConfig.EXEOp.FDIV_S) || (op === ZirconConfig.EXEOp.FSQRT_S)
         isLoad || isMulDiv || isFloat || isFDiv
     }
     
@@ -100,11 +101,12 @@ class Hazard extends Module {
         }
     }
     
-    // RAW冲突处理：如果没有除法器停顿，则处理RAW冲突
-    when(!divStall && rawHazard) {
+    // RAW冲突处理：如果没有除法器停顿和分支冲刷，则处理RAW冲突
+    // 注意：分支冲刷优先于RAW stall，否则PC无法更新到正确的跳转地址
+    when(!divStall && !io.backend.predFail && rawHazard) {
         // 对前端发起停顿
         io.frontend.stall := true.B
-        // 冲刷ID-EX1寄存器（如果除法器stall则优先stall，但这里已经排除了divStall）
+        // 冲刷ID-EX1寄存器
         for (i <- 0 until 8) {
             io.backend.ex1Flush(i) := true.B
         }

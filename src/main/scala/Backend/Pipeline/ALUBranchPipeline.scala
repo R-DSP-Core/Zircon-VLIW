@@ -5,6 +5,7 @@ import chisel3.util._
 class PipelineForwardIO extends Bundle {
     val ex1Pkg = Output(new InstructionPackage)  // EX1阶段
     val ex2Pkg = Output(new InstructionPackage)  // EX2阶段（用于前递）
+    val ex3Pkg = Output(new InstructionPackage)  // EX3阶段（用于前递）
     val wbPkg  = Output(new InstructionPackage)  // WB阶段（用于前递）
     // 接收Forward的前递数据
     val fwdRs1Data = Input(UInt(32.W))
@@ -60,13 +61,8 @@ class ALUBranchPipeline extends Module {
     val io = IO(new ALUBranchPipelineIO)
     
     // ========== EX1阶段 ==========
-    // EX1段间寄存器（ID-EX1）
-    val ex1Pkg = RegInit(0.U.asTypeOf(new InstructionPackage))
-    when(io.hazard.ex1Flush) {
-        ex1Pkg := 0.U.asTypeOf(new InstructionPackage)
-    }.elsewhen(!io.hazard.ex1Stall) {
-        ex1Pkg := io.backend.instPkgIn
-    }
+    // ID-EX1 段间寄存器在 Backend 中统一管理，这里直接使用传入的数据
+    val ex1Pkg = io.backend.instPkgIn
     
     // 应用Forward前递
     val ex1Rs1Data = io.forward.fwdRs1Data
@@ -79,7 +75,7 @@ class ALUBranchPipeline extends Module {
     val aluSrc2 = Mux(ex1Pkg.src2Sel === 0.U, ex1Rs2Data, ex1Pkg.imm)
     alu.io.src1 := aluSrc1
     alu.io.src2 := aluSrc2
-    alu.io.op := ex1Pkg.op(4, 0)
+    alu.io.op := ex1Pkg.op
     
     // Branch实例化
     val branch = Module(new Branch)
@@ -138,6 +134,7 @@ class ALUBranchPipeline extends Module {
     // 输出到Forward和Hazard
     io.forward.ex1Pkg := ex1Pkg
     io.forward.ex2Pkg := ex2Pkg
+    io.forward.ex3Pkg := ex3Pkg
     io.forward.wbPkg := wbPkgOut
     io.hazard.ex1Pkg := ex1Pkg
     io.hazard.ex2Pkg := ex2Pkg
