@@ -1,11 +1,16 @@
 import chisel3._
 import chisel3.util._
 
+// FDivFPUPipeline 特有的 Hazard IO（包含 FDiv busy 信号）
+class FDivFPUPipelineHazardIO extends PipelineHazardIO {
+    val fdivBusy = Output(Bool())
+}
+
 class FDivFPUPipelineIO extends Bundle {
     val forward = new PipelineForwardIO
     val backend = new PipelineBackendIO
     val frontend = new PipelineFrontendIO
-    val hazard = new PipelineHazardIO
+    val hazard = new FDivFPUPipelineHazardIO
 }
 
 class FDivFPUPipeline extends Module {
@@ -33,6 +38,13 @@ class FDivFPUPipeline extends Module {
     fdiv.io.rs1Data := ex1Rs1Data
     fdiv.io.rs2Data := ex1Rs2Data
     fdiv.io.op := ex1Pkg.op
+    fdiv.io.rm := ex1Pkg.rm
+    // 判断是否是 FDiv 指令
+    val isFDivOp = ex1Pkg.op === ZirconConfig.EXEOp.FDIV_S || 
+                   ex1Pkg.op === ZirconConfig.EXEOp.FSQRT_S
+    fdiv.io.valid := ex1Pkg.rdValid && isFDivOp
+    // 分支预测失败或流水线冲刷时终止 FDiv 运算
+    fdiv.io.kill := io.hazard.ex1Flush || io.hazard.ex2Flush || io.hazard.ex3Flush
     
     // FPU实例化
     val fpu = Module(new FPU)
@@ -40,9 +52,7 @@ class FDivFPUPipeline extends Module {
     fpu.io.rs2Data := ex1Rs2Data
     fpu.io.rs3Data := ex1Rs3Data
     fpu.io.op := ex1Pkg.op
-    
-    // 判断是否是FPU/FDiv指令（op[6]=1表示浮点指令）
-    val isFPUOp = ex1Pkg.op(6)
+    fpu.io.rm := ex1Pkg.rm
     
     // EX1阶段更新InstPkg
     val ex1PkgOut = ex1Pkg.EX1Update(alu.io.res, 0.U, false.B)
@@ -61,10 +71,11 @@ class FDivFPUPipeline extends Module {
         ex3Pkg := 0.U.asTypeOf(new InstructionPackage)
     }.elsewhen(!io.hazard.ex3Stall) {
         // EX3阶段更新fpuResult（根据是否是FDiv选择结果）
-        // FDiv: FDIV_S, FSQRT_S
-        val isFDiv = ex2Pkg.op === ZirconConfig.EXEOp.FDIV_S || ex2Pkg.op === ZirconConfig.EXEOp.FSQRT_S
+        val isFDiv = ex2Pkg.op === ZirconConfig.EXEOp.FDIV_S || 
+                     ex2Pkg.op === ZirconConfig.EXEOp.FSQRT_S
         val fpuRes = Mux(isFDiv, fdiv.io.res, fpu.io.res)
-        ex3Pkg := ex2Pkg.EX3Update(fpuRes)
+        val fpuFlags = Mux(isFDiv, fdiv.io.fflags, fpu.io.fflags)
+        ex3Pkg := ex2Pkg.EX3Update(fpuRes, fpuFlags)
     }
     
     // ========== WB阶段 ==========
@@ -97,5 +108,7 @@ class FDivFPUPipeline extends Module {
     io.forward.wbPkg := wbPkgOut
     io.hazard.ex1Pkg := ex1Pkg
     io.hazard.ex2Pkg := ex2Pkg
+    
+    // FDiv busy 信号
+    io.hazard.fdivBusy := fdiv.io.busy
 }
-

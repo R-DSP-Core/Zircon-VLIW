@@ -44,6 +44,9 @@ class BackendHazardIO extends Bundle {
     // 流水线3、4的除法器busy信号
     val divBusy = Output(Vec(2, Bool()))
     
+    // 流水线0的浮点除法器busy信号
+    val fdivBusy = Output(Bool())
+    
     // 流水线7的分支预测失败信号
     val predFail = Output(Bool())
     val branchTgt = Output(UInt(32.W))
@@ -80,9 +83,9 @@ class Backend extends Module {
     }
     
     // ========== 实例化8条Pipeline ==========
-    val pipeline0 = Module(new FDivFPUPipeline)    // FDiv + FPU
-    val pipeline1 = Module(new ALUFPUPipeline)     // ALU + FPU (FPToInt)
-    val pipeline2 = Module(new ALUFPUPipeline)     // ALU + FPU (IntToFP)
+    val pipeline0 = Module(new FDivFPUPipeline)          // FDiv + FPU
+    val pipeline1 = Module(new ALUFPUPipeline(1))        // ALU + FPU (FPToInt)
+    val pipeline2 = Module(new ALUFPUPipeline(0))        // ALU + FPU (IntToFP)
     val pipeline3 = Module(new ALUiMDPipeline)     // ALU + iMulDiv
     val pipeline4 = Module(new ALUiMDPipeline)     // ALU + iMulDiv
     val pipeline5 = Module(new ALULSUPipeline)     // ALU + LSU
@@ -152,6 +155,9 @@ class Backend extends Module {
     // ========== 连接divBusy信号 ==========
     io.hazard.divBusy(0) := pipeline3.io.hazard.divBusy
     io.hazard.divBusy(1) := pipeline4.io.hazard.divBusy
+    
+    // ========== 连接fdivBusy信号 ==========
+    io.hazard.fdivBusy := pipeline0.io.hazard.fdivBusy
     
     // ========== 连接分支预测失败信号 ==========
     io.hazard.predFail := pipeline7.io.hazard.predFail
