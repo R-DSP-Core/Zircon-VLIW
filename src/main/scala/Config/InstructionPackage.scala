@@ -18,12 +18,14 @@ class InstructionPackage extends Bundle {
     val rs3Data   = UInt(32.W)
     // operation
     val op        = UInt(7.W) // [3:0]: operation; [4]: is branch or load or muldiv [5]: is store  [6]: is float (not fdiv) 
+    val rm        = UInt(3.W) // rounding mode for FPU (from inst[14:12])
     val imm       = UInt(32.W)
     val src1Sel   = UInt(1.W) // 0: rs1; 1: pc; 
     val src2Sel   = UInt(1.W) // 0: rs2; 1: imm;
     /* EX Stage */
     val aluResult = UInt(32.W)
     val fpuResult = UInt(32.W)
+    val fflags    = UInt(5.W) // floating-point status flags (NV, DZ, OF, UF, NX)
     val branchTgt = UInt(32.W)
     val predFail  = Bool()
     val memResult = UInt(32.W)
@@ -36,7 +38,7 @@ class InstructionPackage extends Bundle {
         instPkg.inst   := inst
         instPkg
     }
-    def IDUpdate(rs1: UInt, rs2: UInt, rs3: UInt, rd: UInt, rdValid: Bool, op: UInt, imm: UInt, src1Sel: UInt, src2Sel: UInt): InstructionPackage = {
+    def IDUpdate(rs1: UInt, rs2: UInt, rs3: UInt, rd: UInt, rdValid: Bool, op: UInt, rm: UInt, imm: UInt, src1Sel: UInt, src2Sel: UInt): InstructionPackage = {
         val instPkg = WireDefault(this)
         instPkg.rs1       := rs1
         instPkg.rs2       := rs2
@@ -44,6 +46,7 @@ class InstructionPackage extends Bundle {
         instPkg.rd        := rd
         instPkg.rdValid   := rdValid
         instPkg.op        := op
+        instPkg.rm        := rm
         instPkg.imm       := imm
         instPkg.src1Sel   := src1Sel
         instPkg.src2Sel   := src2Sel
@@ -68,9 +71,10 @@ class InstructionPackage extends Bundle {
         instPkg.memResult := memResult
         instPkg
     }
-    def EX3Update(fpuResult: UInt): InstructionPackage = {
+    def EX3Update(fpuResult: UInt, fflags: UInt = 0.U): InstructionPackage = {
         val instPkg = WireDefault(this)
         instPkg.fpuResult := fpuResult
+        instPkg.fflags    := fflags
         instPkg
     }
     def WBUpdate(rfWdata: UInt): InstructionPackage = {

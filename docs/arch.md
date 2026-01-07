@@ -50,12 +50,14 @@ class InstructionPackage extends Bundle {
     val rs3Data   = UInt(32.W)
     // operation
     val op        = UInt(7.W) // [3:0]: operation; [4]: is branch or load or muldiv [5]: is store  [6]: is float (not fdiv) 
+    val rm        = UInt(3.W) // rounding mode for FPU
     val imm       = UInt(32.W)
     val src1Sel   = UInt(1.W) // 0: rs1; 1: pc; 
     val src2Sel   = UInt(1.W) // 0: rs2; 1: imm;
     /* EX Stage */
     val aluResult = UInt(32.W)
     val fpuResult = UInt(32.W)
+    val fflags    = UInt(5.W) // floating-point status flags (NV, DZ, OF, UF, NX)
     val branchTgt = UInt(32.W)
     val predFail  = Bool()
     val memResult = UInt(32.W)
@@ -209,16 +211,29 @@ Backend/
 │   ├── ALUiMDPipeline.scala
 │   ├── ALULSUPipeline.scala
 │   └── ALUBranchPipeline.scala
-├── Arithmetic/
+├── FunctionUnit/
 │   ├── ALU.scala
 │   ├── Adder.scala
-│   ├── Branch.scala
-│   ├── FPU.scala
-│   ├── FDiv.scala
-│   ├── LSU.scala
-│   ├── Multiply.scala
 │   ├── Shifter.scala
-│   └── SRT2.scala
+│   ├── Branch.scala
+│   ├── Multiply.scala
+│   ├── SRT2.scala
+│   ├── LSU.scala
+│   ├── FPU.scala          # 浮点算术单元
+│   ├── FPUConvert.scala   # 类型转换单元
+│   ├── FDiv.scala         # 浮点除法单元
+│   └── fudian/            # Fudian 浮点库
+│       ├── FADD.scala
+│       ├── FMUL.scala
+│       ├── FDIV.scala
+│       ├── FCMP.scala
+│       ├── FPToInt.scala
+│       ├── IntToFP.scala
+│       ├── FPToFP.scala
+│       ├── FCMA.scala
+│       ├── RoundingUnit.scala
+│       ├── package.scala
+│       └── utils/
 └── Bypass/
     └── Forward.scala
 ```
@@ -271,9 +286,33 @@ Branch 占据 EX1 阶段，可以判断分支是否跳转并计算分支跳转�
 
 SRT2 除法器占据 EX1、EX2、EX3 三级流水线，其结果必须等到 WB 段才可以前递。其 `stall` 信号在 EX3 阶段产生，计算周期不定，由被除数和除数的绝对值前导零之差决定。其输入同样受到前递影响。
 
-#### FPU & FDiv（浮点单元与浮点除法器）
+#### FPU（浮点运算单元）
 
-原型机阶段暂不完整实现这两个单元。默认它们需要 EX1、EX2、EX3 三级流水，其结果就是输入的 `rs1Data`。但为了模拟真实情况，结果依然需要等到 WB 才能前递。
+FPU 占据 EX1、EX2、EX3 三级流水，基于 Fudian 浮点库实现，支持以下运算：
+
+- **基本算术**：加法（FADD）、减法（FSUB）、乘法（FMUL）
+- **符号注入**：FSGNJ、FSGNJN、FSGNJX
+- **比较运算**：FEQ、FLT、FLE、FMIN、FMAX
+- **分类指令**：FCLASS
+- **寄存器移动**：FMV.X.W、FMV.W.X
+
+其结果在 WB 阶段才能前递。FPU 会输出 5 位的浮点状态标志（fflags）。
+
+**类型转换支持**：1-2 号流水线的 FPU 额外支持浮点-整数类型转换：
+- 1 号流水线：FPToInt（FCVT.W.S、FCVT.WU.S）
+- 2 号流水线：IntToFP（FCVT.S.W、FCVT.S.WU）
+
+#### FDiv（浮点除法器）
+
+FDiv 基于 SRT-2 算法实现，支持除法（FDIV.S）和开方（FSQRT.S）运算。计算周期不固定，由操作数决定。运算期间会产生 `busy` 信号阻塞流水线。
+
+控制信号接口：
+- `isSqrt`：置 1 进入开方模式
+- `in_valid` / `in_ready`：输入握手信号
+- `out_valid` / `out_ready`：输出握手信号
+- `kill`：终止正在进行的运算
+
+> **注意**：`out_valid` 置 1 后需多打一拍才能得到正确结果。
 
 #### LSU（加载存储单元）
 
@@ -292,11 +331,15 @@ LSU 占据 EX2、EX3 阶段。在原型机阶段实现非常简单：将 `op`、
 
 #### FDivFPUPipeline
 
-该流水线因为在原型机阶段没有已经实现好的完整功能单元，可以直接简单实现。
+该流水线（0 号流水线）包含 FDiv 浮点除法器和 FPU 浮点运算单元。FDiv 在运算期间会产生 `busy` 信号，通过 `PipelineHazardIO` 送到 Hazard 模块进行流水线停顿控制。当分支预测失败时，需要通过 `kill` 信号终止正在进行的浮点除法运算。FPU 和 FDiv 的结果都需要等到 WB 阶段才能前递。
 
 #### ALUFPUPipeline
 
-该流水线只有 EX1 阶段包含 ALU，然后可以在 EX2 阶段前递 ALU 数据。
+该流水线（1-2 号流水线）包含 ALU 和 FPU。ALU 位于 EX1 阶段，其结果可以在 EX2 阶段前递。FPU 占据 EX1-EX3 三级流水，其结果在 WB 阶段前递。
+
+该流水线通过 `convert` 参数控制类型转换方向：
+- `convert = 1`（1 号流水线）：启用 FPToInt，支持 FCVT.W.S、FCVT.WU.S
+- `convert = 0`（2 号流水线）：启用 IntToFP，支持 FCVT.S.W、FCVT.S.WU
 
 #### ALUiMDPipeline
 

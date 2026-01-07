@@ -8,7 +8,9 @@ class ALUFPUPipelineIO extends Bundle {
     val hazard = new PipelineHazardIO
 }
 
-class ALUFPUPipeline extends Module {
+// ALUFPUPipeline 支持类型转换
+// convertType: 1 = FPToInt (1号流水线), 0 = IntToFP (2号流水线)
+class ALUFPUPipeline(val convertType: Int = 0) extends Module {
     val io = IO(new ALUFPUPipelineIO)
     
     // ========== EX1阶段 ==========
@@ -34,6 +36,24 @@ class ALUFPUPipeline extends Module {
     fpu.io.rs2Data := ex1Rs2Data
     fpu.io.rs3Data := ex1Rs3Data
     fpu.io.op := ex1Pkg.op
+    fpu.io.rm := ex1Pkg.rm
+    
+    // 类型转换模块实例化
+    val fpuConvert = Module(new FPUConvert(convertType))
+    fpuConvert.io.rs1Data := ex1Rs1Data
+    fpuConvert.io.op := ex1Pkg.op
+    fpuConvert.io.rm := ex1Pkg.rm
+    
+    // 判断是否是类型转换指令
+    val isConvert = if (convertType == 1) {
+        // FPToInt: FCVT.W.S, FCVT.WU.S
+        ex1Pkg.op === ZirconConfig.EXEOp.FCVT_W_S || 
+        ex1Pkg.op === ZirconConfig.EXEOp.FCVT_WU_S
+    } else {
+        // IntToFP: FCVT.S.W, FCVT.S.WU
+        ex1Pkg.op === ZirconConfig.EXEOp.FCVT_S_W || 
+        ex1Pkg.op === ZirconConfig.EXEOp.FCVT_S_WU
+    }
     
     // EX1阶段更新InstPkg
     val ex1PkgOut = ex1Pkg.EX1Update(alu.io.res, 0.U, false.B)
@@ -51,8 +71,19 @@ class ALUFPUPipeline extends Module {
     when(io.hazard.ex3Flush) {
         ex3Pkg := 0.U.asTypeOf(new InstructionPackage)
     }.elsewhen(!io.hazard.ex3Stall) {
-        // EX3阶段更新fpuResult
-        ex3Pkg := ex2Pkg.EX3Update(fpu.io.res)
+        // EX3阶段：选择 FPU 或类型转换结果
+        // 保存 EX2 阶段的 isConvert 判断结果
+        val ex2IsConvert = if (convertType == 1) {
+            ex2Pkg.op === ZirconConfig.EXEOp.FCVT_W_S || 
+            ex2Pkg.op === ZirconConfig.EXEOp.FCVT_WU_S
+        } else {
+            ex2Pkg.op === ZirconConfig.EXEOp.FCVT_S_W || 
+            ex2Pkg.op === ZirconConfig.EXEOp.FCVT_S_WU
+        }
+        
+        val fpuRes = Mux(ex2IsConvert, fpuConvert.io.res, fpu.io.res)
+        val fpuFlags = Mux(ex2IsConvert, fpuConvert.io.fflags, fpu.io.fflags)
+        ex3Pkg := ex2Pkg.EX3Update(fpuRes, fpuFlags)
     }
     
     // ========== WB阶段 ==========
@@ -84,4 +115,3 @@ class ALUFPUPipeline extends Module {
     io.hazard.ex1Pkg := ex1Pkg
     io.hazard.ex2Pkg := ex2Pkg
 }
-
