@@ -1,0 +1,71 @@
+name: Sync from personal repo (keep workflow on main)
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "0 */6 * * *"  # 每6小时一次，可改
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout target repo (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set git identity
+        run: |
+          git config user.name "sync-bot"
+          git config user.email "sync-bot@users.noreply.github.com"
+
+      - name: Add upstream (personal) and fetch
+        run: |
+          git remote add upstream https://github.com/MAdrid1011/Zircon-VLIW.git
+          git fetch --prune upstream "+refs/heads/*:refs/remotes/upstream/*"
+          git fetch --tags upstream
+
+      # -------- main：用 merge，同步个人 main 的更新，同时保留组织 main 上的 workflow 提交 --------
+      - name: Sync main by merge (keeps .github/workflows)
+        env:
+          TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          git remote set-url origin https://x-access-token:${TOKEN}@github.com/R-DSP-Core/Zircon-VLIW.git
+
+          # 确保本地 main 存在并指向 origin/main
+          git checkout main
+          git pull --ff-only origin main || true
+
+          # 把 upstream/main 合并进来（一般不会冲突，因为 upstream 没改 .github/workflows）
+          git merge --no-edit upstream/main || (git status && echo "Merge conflict - manual resolve needed" && exit 1)
+
+          git push origin main
+
+      # -------- tags：同步 tags（一般不冲突；如果你们会改 tag，可去掉 --force）--------
+      - name: Sync tags
+        env:
+          TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          git remote set-url origin https://x-access-token:${TOKEN}@github.com/R-DSP-Core/Zircon-VLIW.git
+          git push --tags origin
+
+      # -------- 其它分支：可选 --------
+      # 说明：下面这段会把 upstream 的所有分支（除了 main）镜像到 origin（强对齐）。
+      # 如果你们组织仓库其它分支也有人在改，强对齐会覆盖他们的提交 → 你就把这段注释/删掉。
+      - name: (Optional) Mirror other branches from upstream
+        env:
+          TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          git remote set-url origin https://x-access-token:${TOKEN}@github.com/R-DSP-Core/Zircon-VLIW.git
+
+          for b in $(git for-each-ref refs/remotes/upstream --format="%(refname:strip=3)"); do
+            if [ "$b" = "HEAD" ] || [ "$b" = "main" ]; then
+              continue
+            fi
+            echo "Mirror branch: $b"
+            # 把 upstream/$b 强制写到 origin 的同名分支
+            git push --force-with-lease origin "refs/remotes/upstream/$b:refs/heads/$b"
+          done
