@@ -25,7 +25,8 @@ class Hazard extends Module {
     }
     
     // ========== 1. 除法器停顿处理（最高优先级）==========
-    val divStall = io.backend.divBusy(0) || io.backend.divBusy(1)
+    // 包括整数除法器（流水线3、4）和浮点除法器（流水线0）
+    val divStall = io.backend.divBusy(0) || io.backend.divBusy(1) || io.backend.fdivBusy
     when(divStall) {
         // 对前端发起停顿
         io.frontend.stall := true.B
